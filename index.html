@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mozaik Coffee</title>
+<title>Kopi Kelola — Supabase</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -234,8 +234,8 @@ function icon(name){const s='stroke="currentColor" stroke-width="1.8" fill="none
    ISI KREDENSIAL SUPABASE ANDA DI SINI  (Project Settings → API)
    Gunakan kunci "anon public" — JANGAN "service_role".
    ============================================================ */
-const SUPABASE_URL      = "https://vwolictpbzcqgenbtqjc.supabase.co";      // ← GANTI: Project URL Anda
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ3b2xpY3RwYnpjcWdlbmJ0cWpjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxODg4MjIsImV4cCI6MjEwMjc2NDgyMn0.1fc9gpnSQLiJt9UzLrU0cOzBbK3ceZtuMqkQhBqHodY";      // ← GANTI: anon public key
+const SUPABASE_URL      = "https://xxxxxxxx.supabase.co";      // ← GANTI: Project URL Anda
+const SUPABASE_ANON_KEY = "GANTI_DENGAN_ANON_PUBLIC_KEY";      // ← GANTI: anon public key
 /* ============================================================ */
 
 /* ================= Config + Supabase REST client ================= */
@@ -269,6 +269,12 @@ const api={
   update:(t,id,obj)=>rest(t,{method:'PATCH',query:'id=eq.'+id,body:obj,rep:true}),
   remove:(t,id)=>rest(t,{method:'DELETE',query:'id=eq.'+id})
 };
+async function rpc(fn,args){ const res=await fetch(cfg.url+'/rest/v1/rpc/'+fn,{method:'POST',headers:headers(),body:JSON.stringify(args)}); if(!res.ok){const t=await res.text();throw new Error(t.replace(/[{}"]/g,'').slice(0,180));} const txt=await res.text(); return txt?JSON.parse(txt):null; }
+
+/* username → email internal mapping (staf login pakai username, tanpa email asli) */
+const EMAIL_DOMAIN='kopikelola.app';
+function emailFor(u){ return String(u||'').trim().toLowerCase()+'@'+EMAIL_DOMAIN; }
+function validUser(u){ return /^[a-z0-9._-]{3,20}$/.test(String(u||'').trim().toLowerCase()); }
 
 /* auth REST */
 async function authFetch(path,body){
@@ -283,14 +289,15 @@ async function doRefresh(rt){ return authFetch('token?grant_type=refresh_token',
 
 function applyTokens(d){ session={access_token:d.access_token,refresh_token:d.refresh_token,expires_at:d.expires_at||(Math.floor(Date.now()/1000)+(d.expires_in||3600)),user:{id:d.user.id,email:d.user.email},profile:session&&session.profile?session.profile:null}; }
 
-async function ensureProfile(name){
+async function ensureProfile(name,username){
   const rows=await api.select('profiles','id=eq.'+session.user.id);
-  if(rows&&rows.length){ session.profile={name:rows[0].name,role:rows[0].role}; return; }
+  if(rows&&rows.length){ session.profile={name:rows[0].name,role:rows[0].role,username:rows[0].username}; return; }
   // no profile yet — first user becomes owner
   let role='kasir';
-  try{ const all=await api.select('profiles','select=id&limit=1'); if(!all||!all.length) role='owner'; }catch(e){}
-  const ins=await api.insert('profiles',{id:session.user.id,name:name||session.user.email.split('@')[0],role});
-  session.profile={name:ins[0].name,role:ins[0].role};
+  try{ const all=await rest('profiles',{query:'select=id&limit=1'}); if(!all||!all.length) role='owner'; }catch(e){}
+  const uname=username||(session.user.email?session.user.email.split('@')[0]:'user');
+  const ins=await api.insert('profiles',{id:session.user.id,name:name||uname,role,username:uname});
+  session.profile={name:ins[0].name,role:ins[0].role,username:ins[0].username};
 }
 
 /* ================= helpers ================= */
@@ -322,7 +329,7 @@ async function loadAll(){
   state.menu=(menu||[]).map(r=>({id:r.id,name:r.name,price:+r.price,recipe:r.recipe||[],img:r.image_url||null,hasImg:!!r.image_url}));
   state.sales=(sales||[]).map(r=>({id:r.id,date:r.created_at,items:r.items||[],total:+r.total,cogs:+(r.cogs||0),cashier:r.cashier}));
   state.expenses=(exp||[]).map(r=>({id:r.id,date:r.date,category:r.category,desc:r.description,amount:+r.amount,type:r.type}));
-  state.profiles=(prof||[]).map(r=>({id:r.id,name:r.name,role:r.role}));
+  state.profiles=(prof||[]).map(r=>({id:r.id,name:r.name,role:r.role,username:r.username}));
   setSync(true);
 }
 function setSync(ok){const d=document.getElementById('syncdot'),t=document.getElementById('synctext');if(d)d.classList.toggle('off',!ok);if(t)t.textContent=ok?('Tersinkron · '+new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})):'Terputus';}
@@ -370,17 +377,18 @@ function authScreen(){
   const login=authMode==='login';
   return `<div class="auth-card">
     <div class="auth-brand"><div class="cup">${icon('lock')}</div><div><b>Kopi Kelola</b><span>${login?'Masuk':'Daftar'}</span></div></div>
-    <h2>${login?'Selamat datang':'Buat akun'}</h2><p class="lead">${login?'Masuk dengan akun staf coffee shop.':'Akun pertama otomatis menjadi Pemilik. Berikutnya menjadi Kasir.'}</p>
+    <h2>${login?'Selamat datang':'Buat akun'}</h2><p class="lead">${login?'Masuk dengan username & password.':'Akun pertama otomatis menjadi Pemilik. Berikutnya menjadi Kasir.'}</p>
     ${!isConfigured()?`<div class="err show">Project URL / anon key belum diisi. Buka file HTML ini, cari <b>SUPABASE_URL</b> & <b>SUPABASE_ANON_KEY</b> di bagian atas skrip, isi, simpan, lalu buka ulang.</div>`:''}
     <div class="err" id="autherr"></div>
     <form id="${login?'loginForm':'signupForm'}">
       ${login?'':`<div class="field"><label>Nama</label><input name="name" required placeholder="Nama lengkap"></div>`}
-      <div class="field"><label>Email</label><input name="email" type="email" required autocapitalize="off" autofocus></div>
-      <div class="field"><label>Password</label><input name="password" type="password" required placeholder="min. 6 karakter"></div>
+      <div class="field"><label>Username</label><input name="username" required autocapitalize="off" autocomplete="username" placeholder="mis. budi (huruf kecil/angka)" ${login?'autofocus':''}></div>
+      <div class="field"><label>Password</label><input name="password" type="password" required placeholder="min. 6 karakter" autocomplete="${login?'current-password':'new-password'}"></div>
       <button class="btn block" type="submit" style="margin-top:6px">${login?'Masuk':'Daftar & Masuk'}</button>
     </form>
+    ${login?`<div class="authswap" style="margin-top:12px"><button data-act="forgot">Lupa password?</button></div>`:''}
     <div class="authswap">${login?'Belum punya akun?':'Sudah punya akun?'} <button data-act="swapauth">${login?'Daftar':'Masuk'}</button></div>
-    <div class="hintbox">Koneksi Supabase diatur di dalam file HTML (baris <b>SUPABASE_URL</b> & <b>SUPABASE_ANON_KEY</b>). Pastikan sudah menjalankan <b>supabase-setup.sql</b> dan mematikan <b>Confirm email</b>.</div>
+    <div class="hintbox">Login memakai username saja \u2014 tanpa email. Pastikan sudah menjalankan <b>supabase-setup.sql</b> (versi terbaru) dan mematikan <b>Confirm email</b> di Supabase.</div>
   </div>`;
 }
 function authErr(msg,ok){const e=document.getElementById('autherr');if(e){e.textContent=msg;e.classList.add('show');e.classList.toggle('ok',!!ok);}}
@@ -499,12 +507,24 @@ function baseChartOpts(){return {responsive:true,maintainAspectRatio:false,plugi
 
 /* ---------- PENGGUNA ---------- */
 function viewPengguna(){
-  return `<div class="section-head" style="margin-top:0"><h2>Akun & akses</h2><span class="hint">Pemilik: akses penuh · Kasir: hanya Kasir. Undang staf lewat halaman Daftar.</span></div>
-  <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Peran</th><th></th></tr></thead><tbody>${state.profiles.map(u=>`<tr><td><b>${esc(u.name)}</b>${u.id===session.user.id?' <span class="tag">Anda</span>':''}</td><td><span class="tag role ${u.role==='kasir'?'kasir':''}">${u.role==='owner'?'Pemilik':'Kasir'}</span></td><td><div class="rowact">${u.id===session.user.id?'':`<button class="btn sm ghost" data-act="toggle-role" data-id="${u.id}" data-role="${u.role}">Jadikan ${u.role==='owner'?'Kasir':'Pemilik'}</button>`}</div></td></tr>`).join('')}</tbody></table></div>
-  <p style="color:var(--muted);font-size:13px;margin-top:14px">Staf baru mendaftar sendiri di layar Daftar memakai URL & anon key yang sama. Autentikasi & password dikelola oleh Supabase Auth.</p>`;
+  return `<div class="section-head" style="margin-top:0"><h2>Akun & akses</h2><span class="hint">Pemilik: akses penuh · Kasir: hanya Kasir. Staf mendaftar sendiri di layar Daftar.</span></div>
+  <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Peran</th><th></th></tr></thead><tbody>${state.profiles.map(u=>`<tr><td><b>${esc(u.name)}</b>${u.id===session.user.id?' <span class="tag">Anda</span>':''}</td><td class="mono">${esc(u.username||'—')}</td><td><span class="tag role ${u.role==='kasir'?'kasir':''}">${u.role==='owner'?'Pemilik':'Kasir'}</span></td><td><div class="rowact"><button class="btn sm ghost" data-act="reset-pass" data-id="${u.id}">Reset password</button>${u.id===session.user.id?'':`<button class="btn sm ghost" data-act="toggle-role" data-id="${u.id}" data-role="${u.role}">Jadikan ${u.role==='owner'?'Kasir':'Pemilik'}</button>`}</div></td></tr>`).join('')}</tbody></table></div>
+  <p style="color:var(--muted);font-size:13px;margin-top:14px">Lupa password? Pemilik klik <b>Reset password</b> untuk staf mana pun. Jika Pemilik sendiri lupa, reset lewat SQL (lihat panduan di layar login → "Lupa password?").</p>`;
 }
 
 /* ================= shared / modals ================= */
+function forgotModal(){
+  return `<div class="modal-head"><h3>Lupa Password</h3><button class="iconbtn" data-act="close">✕</button></div>
+  <div class="modal-body">
+    <p style="font-size:14.5px;color:var(--ink-soft);line-height:1.6;margin-bottom:12px">Reset password dilakukan oleh <b>Pemilik</b> demi keamanan:</p>
+    <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px"><div style="width:26px;height:26px;border-radius:8px;background:var(--enamel-tint);color:var(--enamel-dark);display:grid;place-items:center;font-weight:700;flex-shrink:0;font-family:'Fraunces',serif">1</div><div style="font-size:14px;color:var(--ink-soft);line-height:1.5"><b>Kasir lupa password:</b> minta Pemilik membuka menu <b>Pengguna</b> → klik <b>Reset password</b> di baris nama Anda.</div></div>
+    <div style="display:flex;gap:10px;align-items:flex-start"><div style="width:26px;height:26px;border-radius:8px;background:var(--brass-tint);color:#7a5808;display:grid;place-items:center;font-weight:700;flex-shrink:0;font-family:'Fraunces',serif">2</div><div style="font-size:14px;color:var(--ink-soft);line-height:1.5"><b>Pemilik lupa password:</b> buka Supabase → <b>SQL Editor</b>, jalankan perintah berikut (ganti <i>USERNAME</i> & <i>passwordbaru</i>):</div></div>
+    <pre style="background:var(--ink);color:#EAF3EF;border-radius:10px;padding:12px 14px;margin-top:10px;font-family:'Space Mono',monospace;font-size:11.5px;line-height:1.6;overflow:auto;white-space:pre-wrap">update auth.users set encrypted_password =
+  extensions.crypt('passwordbaru', extensions.gen_salt('bf'))
+where email = 'USERNAME@${EMAIL_DOMAIN}';</pre>
+    <div class="modal-foot"><button class="btn" data-act="close">Mengerti</button></div>
+  </div>`;
+}
 function emptyBox(msg,act,btn){return `<div class="card empty">${icon('receipt')}<p>${msg}</p>${act?`<button class="btn" style="margin-top:16px" data-act="${act}">${icon('plus')}${btn}</button>`:''}</div>`;}
 function openModal(html,wide){const m=document.getElementById('modal');m.className='modal'+(wide?' wide':'');m.innerHTML=html;document.getElementById('overlay').classList.add('show');const f=document.querySelector('#modal input,#modal select');if(f)f.focus();}
 function closeModal(){document.getElementById('overlay').classList.remove('show');draft=null;}
@@ -545,6 +565,7 @@ document.addEventListener('click',async e=>{
   const t=e.target.closest('[data-act]');if(!t)return;const act=t.dataset.act,id=t.dataset.id;
   if(act==='close'){closeModal();return;}
   if(act==='swapauth'){authMode=authMode==='login'?'signup':'login';showAuth(authScreen());return;}
+  if(act==='forgot'){openModal(forgotModal());return;}
   if(act==='editcfg'){await cfgClear();await sessClear();showAuth(configScreen());return;}
   if(act==='retry'){await enterApp();return;}
   if(act==='refresh'){try{await loadAll();render();toast('Data disegarkan');}catch(err){setSync(false);toast('Gagal menyegarkan');}return;}
@@ -563,6 +584,7 @@ document.addEventListener('click',async e=>{
   if(act==='del-exp'){if(confirm('Hapus catatan ini?')){try{await api.remove('expenses',id);await loadAll();render();}catch(err){toast('Gagal: '+err.message);}}return;}
 
   if(act==='toggle-role'){const nr=t.dataset.role==='owner'?'kasir':'owner';if(confirm('Ubah peran pengguna ini?')){try{await api.update('profiles',id,{role:nr});await loadAll();render();}catch(err){toast('Gagal: '+err.message);}}return;}
+  if(act==='reset-pass'){const u=state.profiles.find(x=>x.id===id);if(!u)return;const np=prompt('Password baru untuk "'+(u.username||u.name)+'" (min. 6 karakter):');if(np===null)return;if(np.length<6){toast('Password minimal 6 karakter');return;}try{await rpc('admin_set_password',{target_username:u.username,new_password:np});toast('Password '+(u.username||u.name)+' berhasil direset ✓');}catch(err){toast('Gagal reset: '+err.message);}return;}
 
   if(act==='cart-add'||act==='cart-inc'){cart[id]=(cart[id]||0)+1;render();return;}
   if(act==='cart-dec'){cart[id]=(cart[id]||0)-1;if(cart[id]<=0)delete cart[id];render();return;}
@@ -583,8 +605,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
 document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target;const sub=f.querySelector('[type=submit]');
   if(f.id==='cfgForm'){const d=Object.fromEntries(new FormData(f));let url=d.url.trim().replace(/\/+$/,'');if(!/^https:\/\/.+/.test(url)){authErr('URL harus diawali https://');return;}cfg={url,key:d.key.trim()};await cfgSave();authMode='login';showAuth(authScreen());return;}
-  if(f.id==='loginForm'){busy(sub,true);try{const d=Object.fromEntries(new FormData(f));const tok=await signIn(d.email.trim(),d.password);applyTokens(tok);await ensureProfile();await sessSave();await enterApp();}catch(err){authErr(friendlyAuth(err.message));}busy(sub,false);return;}
-  if(f.id==='signupForm'){busy(sub,true);try{const d=Object.fromEntries(new FormData(f));const up=await signUp(d.email.trim(),d.password);if(up.access_token){applyTokens(up);}else{const tok=await signIn(d.email.trim(),d.password);applyTokens(tok);}await ensureProfile(d.name.trim());await sessSave();await enterApp();}catch(err){authErr(friendlyAuth(err.message));}busy(sub,false);return;}
+  if(f.id==='loginForm'){busy(sub,true);try{const d=Object.fromEntries(new FormData(f));const uname=d.username.trim().toLowerCase();if(!validUser(uname)){authErr('Username 3–20 karakter (huruf kecil, angka, . _ -).');busy(sub,false);return;}const tok=await signIn(emailFor(uname),d.password);applyTokens(tok);await ensureProfile(null,uname);await sessSave();await enterApp();}catch(err){authErr(friendlyAuth(err.message));}busy(sub,false);return;}
+  if(f.id==='signupForm'){busy(sub,true);try{const d=Object.fromEntries(new FormData(f));const uname=d.username.trim().toLowerCase();if(!validUser(uname)){authErr('Username 3–20 karakter (huruf kecil, angka, . _ -).');busy(sub,false);return;}if(d.password.length<6){authErr('Password minimal 6 karakter.');busy(sub,false);return;}const up=await signUp(emailFor(uname),d.password);if(up.access_token){applyTokens(up);}else{const tok=await signIn(emailFor(uname),d.password);applyTokens(tok);}await ensureProfile(d.name.trim(),uname);await sessSave();await enterApp();}catch(err){authErr(friendlyAuth(err.message));}busy(sub,false);return;}
   if(f.id!=='frm')return;
   const kind=f.dataset.kind,d=Object.fromEntries(new FormData(f).entries());
   try{
@@ -594,7 +616,7 @@ document.addEventListener('submit',async e=>{
     await loadAll();closeModal();render();
   }catch(err){toast('Gagal menyimpan: '+err.message);}
 });
-function friendlyAuth(m){if(/Invalid login/i.test(m))return 'Email atau password salah.';if(/already/i.test(m))return 'Email sudah terdaftar. Silakan masuk.';if(/confirm/i.test(m))return 'Email perlu dikonfirmasi. Matikan "Confirm email" di Supabase, atau cek email.';if(/Password/i.test(m))return 'Password minimal 6 karakter.';if(/Failed to fetch|NetworkError/i.test(m))return 'Tidak bisa terhubung. Cek URL/kunci, atau buka file di luar preview.';return m;}
+function friendlyAuth(m){if(/Invalid login|invalid_grant|credentials/i.test(m))return 'Username atau password salah.';if(/already|registered|exists/i.test(m))return 'Username sudah dipakai. Silakan masuk atau pilih username lain.';if(/confirm|not_confirmed/i.test(m))return 'Matikan "Confirm email" di Supabase (Authentication → Email), lalu coba lagi.';if(/Password|at least|6 char/i.test(m))return 'Password minimal 6 karakter.';if(/Failed to fetch|NetworkError|fetch/i.test(m))return 'Tidak bisa terhubung ke Supabase. Cek URL/kunci, atau buka file di luar preview (unduh & buka lokal).';if(/signup.*disabled|not allowed/i.test(m))return 'Pendaftaran dinonaktifkan. Aktifkan "Allow new users to sign up" di Supabase.';return m;}
 
 async function saveMenu(){
   if(!draft.name.trim()){alert('Nama menu wajib diisi');return;}
